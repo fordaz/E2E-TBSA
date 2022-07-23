@@ -1,4 +1,5 @@
 import string
+import nltk
 from nltk import ngrams
 import numpy as np
 # DO NOT change the random seed, otherwise, the train-test split will be inconsistent with those in the baselines
@@ -434,43 +435,14 @@ def read_data(path):
     with open(path, encoding='UTF-8') as fp:
         for line in fp:
             record = {}
-            sent, tag_string = line.strip().split('####')
+            if '####' in line:
+                sent, tag_string = line.strip().split('####')
+                word_tag_pairs = tag_string.split(' ')
+                words, ts_tags, ote_tags = extract_words_from_word_tab_pair(word_tag_pairs)
+            else:
+                sent = line.strip()
+                words, ts_tags, ote_tags = extract_words_from_sent(sent)
             record['sentence'] = sent
-            word_tag_pairs = tag_string.split(' ')
-            # tag sequence for targeted sentiment
-            ts_tags = []
-            # tag sequence for opinion target extraction
-            ote_tags = []
-            # word sequence
-            words = []
-            for item in word_tag_pairs:
-                # valid label is: O, T-POS, T-NEG, T-NEU
-                eles = item.split('=')
-                if len(eles) == 2:
-                    word, tag = eles
-                elif len(eles) > 2:
-                    tag = eles[-1]
-                    word = (len(eles) - 2) * "="
-                if word not in string.punctuation:
-                    # lowercase the words
-                    words.append(word.lower())
-                else:
-                    # replace punctuations with a special token
-                    words.append('PUNCT')
-                if tag == 'O':
-                    ote_tags.append('O')
-                    ts_tags.append('O')
-                elif tag == 'T-POS':
-                    ote_tags.append('T')
-                    ts_tags.append('T-POS')
-                elif tag == 'T-NEG':
-                    ote_tags.append('T')
-                    ts_tags.append('T-NEG')
-                elif tag == 'T-NEU':
-                    ote_tags.append('T')
-                    ts_tags.append('T-NEU')
-                else:
-                    raise Exception('Invalid tag %s!!!' % tag)
             record['words'] = words.copy()
             record['ote_raw_tags'] = ote_tags.copy()
             record['ts_raw_tags'] = ts_tags.copy()
@@ -478,6 +450,52 @@ def read_data(path):
     print("Obtain %s records from %s" % (len(dataset), path))
     return dataset
 
+def extract_words_from_sent(sent):
+    # tag sequence for targeted sentiment
+    ts_tags = []
+    # tag sequence for opinion target extraction
+    ote_tags = []
+    # word sequence
+    words = nltk.word_tokenize(sent)
+    return words, ts_tags, ote_tags
+
+def extract_words_from_word_tab_pair(word_tag_pairs):
+    # tag sequence for targeted sentiment
+    ts_tags = []
+    # tag sequence for opinion target extraction
+    ote_tags = []
+    # word sequence
+    words = []
+    for item in word_tag_pairs:
+        # valid label is: O, T-POS, T-NEG, T-NEU
+        eles = item.split('=')
+        if len(eles) == 2:
+            word, tag = eles
+        elif len(eles) > 2:
+            tag = eles[-1]
+            word = (len(eles) - 2) * "="
+        if word not in string.punctuation:
+            # lowercase the words
+            words.append(word.lower())
+        else:
+            # replace punctuations with a special token
+            words.append('PUNCT')
+        if tag == 'O':
+            ote_tags.append('O')
+            ts_tags.append('O')
+        elif tag == 'T-POS':
+            ote_tags.append('T')
+            ts_tags.append('T-POS')
+        elif tag == 'T-NEG':
+            ote_tags.append('T')
+            ts_tags.append('T-NEG')
+        elif tag == 'T-NEU':
+            ote_tags.append('T')
+            ts_tags.append('T-NEU')
+        else:
+            raise Exception('Invalid tag %s!!!' % tag)
+
+    return words, ts_tags, ote_tags
 
 def set_wid(dataset, vocab, win=1):
     """

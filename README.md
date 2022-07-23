@@ -1,3 +1,61 @@
+# Notes on this Fork
+
+The purpose of this fork is educational and has minor changes to run this project on my local machine.
+
+## Install dependencies:
+
+```
+# assumes conda is already installed
+conda create --name e2e-tbsa-dev python=3.6
+
+conda activate e2e-tbsa-dev
+
+python -m pip install -r requirements.txt
+```
+
+Comments:
+
+* I just installed `dynet` using the requirements.txt, not following the referred instructions by the authors.
+
+
+## Get and set the glove embeddings
+
+```
+mkdir embeddings
+cd embeddings
+curl -L https://nlp.stanford.edu/data/glove.840B.300d.zip -o glove.840B.300d.zip
+unzip glove.840B.300d.zip
+cd ..
+```
+
+```
+# needed later when training the model
+mkdir log
+```
+
+## Train the model using
+
+```
+python main.py -ds_name laptop14
+```
+
+## Test the trained model
+
+Pick the latest model from the `models` folder, for example `laptop14_0.551384.model`
+
+```
+python main.py -ds_name laptop14 -model_name laptop14_0.551384.model -mode test
+```
+
+## Checking model predictions
+
+I wanted to feed non annotated datasets to the model to inspect the predictions. For a quick test, I created `data/sentences_train.txt` and `data/sentences_test.txt` from the original laptop14_0 dataset. When creating your own datasets you will need both train and test splits, as this is expected by the data loading code.
+
+```
+python main.py -ds_name laptop14 -model_name laptop14_0.551384.model -mode serving -serve_ds sentences
+```
+This serving execution outputs the predictions in the `predictions/predictions.txt` file.
+
 # E2E-TBSA
 Source code of our AAAI paper on End-to-End Target/Aspect-Based Sentiment Analysis.
 

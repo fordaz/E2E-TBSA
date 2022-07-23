@@ -185,6 +185,10 @@ if __name__ == '__main__':
     parser.add_argument("-lr_decay", type=float, default=0.05, help="decay rate of learning rate")
     parser.add_argument("-use_char", type=int, default=0, help="if use character-level word embeddings")
     parser.add_argument('-epsilon', type=float, default=0.5, help="maximum proportions of the boundary-based scores")
+    parser.add_argument('-mode', type=str, default="train-test", help="One of: train-test, test")
+    parser.add_argument('-model_name', type=str, default="laptop14_0.551384.model", help="Model to test (pick the latest from ./models)")
+    parser.add_argument('-serve_ds', type=str, default="sentences", help="Dataset with no annotations")
+
     dy_seed = 1314159
     random_seed = 1234
     #random_seed = 1972
@@ -199,17 +203,17 @@ if __name__ == '__main__':
     emb_name = args.emb_name
 
     emb2path = {
-        'glove_6B': '/projdata9/info_fil/lixin/Research/OTE/embeddings/glove_6B_300d.txt',
-        'glove_42B': '/projdata9/info_fil/lixin/Research/OTE/embeddings/glove_42B_300d.txt',
-        'glove_840B': '/projdata9/info_fil/lixin/Research/OTE/embeddings/glove_840B_300d.txt',
-        'glove_27B100d': '/projdata9/info_fil/lixin/Research/OTE/embeddings/glove_twitter_27B_100d.txt',
-        'glove_27B200d': '/projdata9/info_fil/lixin/Research/OTE/embeddings/glove_twitter_27B_200d.txt',
+        'glove_6B': 'embeddings/glove_6B_300d.txt',
+        'glove_42B': 'embeddings/glove_42B_300d.txt',
+        'glove_840B': 'embeddings/glove.840B.300d.txt',
+        'glove_27B100d': 'embeddings/glove_twitter_27B_100d.txt',
+        'glove_27B200d': 'embeddings/glove_twitter_27B_200d.txt',
         'yelp_rest1': '/projdata9/info_fil/lixin/Research/yelp/yelp_vec_200_2_win5_sent.txt',
         'yelp_rest2': '/projdata9/info_fil/lixin/Research/yelp/yelp_vec_200_2_new.txt',
         'amazon_laptop': '/projdata9/info_fil/lixin/Resources/amazon_full/vectors/amazon_laptop_vec_200_5.txt'
     }
 
-    emb_path = emb2path[emb_name]
+    emb_path = os.path.join("./", emb2path[emb_name])
 
     input_win = args.input_win
     stm_win = args.stm_win
@@ -252,7 +256,8 @@ if __name__ == '__main__':
     args.char_vocab = char_vocab
     model = Model(params=args, vocab=vocab, embeddings=embeddings, char_embeddings=char_embeddings)
 
-    mode = 'train-test'
+    mode = args.mode
+    model_name = args.model_name
     if mode == 'train-test':
         final_res_string, model_path = run(dataset=[train, val, test], model=model, params=args)
         log_lines.append(final_res_string + "\n")
@@ -263,8 +268,18 @@ if __name__ == '__main__':
             os.mkdir('log')
         with open('log/%s.txt' % ds_name, 'a') as fp:
             fp.writelines(log_lines)
-    else:
-        model.decoding(dataset=test, model_name='lstm_cascade_laptop14_0.573138.model')
+    elif mode == 'test':
+        print(f"Testing model {model_name}")
+        model.decoding(dataset=test, model_name=model_name)
+    elif mode == 'serving':
+        print(f"Serving from from model {model_name}")
+        serve_ds = args.serve_ds
+        # The ds_name is used for properly loading the model, serve_ds is used only for predictions
+        serve_train, serve_val, serve_test, _, _, _, _ = build_dataset(
+            ds_name=serve_ds, input_win=input_win,
+            tagging_schema=tagging_schema, stm_win=stm_win
+        )
+        model.serve(dataset=serve_test, model_name=model_name)
 
 
 

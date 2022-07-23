@@ -5,7 +5,7 @@ import random
 from utils import *
 from evals import *
 from nltk import word_tokenize
-
+import json
 
 def norm_vec(vec):
     """
@@ -471,6 +471,133 @@ class Model:
             # use empty lines as the separator
             output_lines.append('\n')
 
+    def serve_forward(self, x, is_train=False):
+        """
+        feed the input x into the network
+        :param x: input example (with no annotations)
+        :param is_train: model is in training stage or not, default yes
+        :return: loss value, predicted ote labels, predicted ts labels
+        """
+
+        # renew computational graph
+        dy.renew_cg()
+        # push the parameters to the cg, no need to do this after v2.0.3
+        # self.parametrize()
+
+        wids = x['wids']
+        cids = x['cids']
+
+        seq_len = len(wids)
+
+        if self.use_char:
+            # using both character-level word representations and word-level representations
+            ch_word_emb = []
+            for t in range(seq_len):
+                ch_seq = cids[t]
+                input_ch_emb = self.char_emb(xs=ch_seq)
+                ch_h0_f = self.lstm_char.initial_state()
+                ch_h0_b = self.lstm_char.initial_state()
+                ch_f = ch_h0_f.transduce(input_ch_emb)[-1]
+                ch_b = ch_h0_b.transduce(input_ch_emb[::-1])[-1]
+                ch_word_emb.append(dy.concatenate([ch_f, ch_b]))
+            word_emb = self.emb(xs=wids)
+            input_emb = [dy.concatenate([c, w]) for (c, w) in zip(ch_word_emb, word_emb)]
+        else:
+            # only using word-level representations
+            input_emb = self.emb(xs=wids)
+
+        # equivalent to applying partial dropout on the LSTM
+        if is_train:
+            input_emb = [dy.dropout(x, self.dropout_rate) for x in input_emb]
+
+        # obtain initial rnn states
+        ote_h0_f = self.lstm_ote.initial_state()
+        ote_h0_b = self.lstm_ote.initial_state()
+
+        ote_hs_f = ote_h0_f.transduce(input_emb)
+        ote_hs_b = ote_h0_b.transduce(input_emb[::-1])[::-1]
+
+        ote_hs = [dy.concatenate([f, b]) for (f, b) in zip(ote_hs_f, ote_hs_b)]
+
+        # hidden states for opinion-enhanced target prediction, we refer it as stm_lm here
+        stm_lm_hs = [self.stm_lm(h) for h in ote_hs]
+
+        ts_h0_f = self.lstm_ts.initial_state()
+        ts_h0_b = self.lstm_ts.initial_state()
+
+        ts_hs_f = ts_h0_f.transduce(ote_hs)
+        ts_hs_b = ts_h0_b.transduce(ote_hs[::-1])[::-1]
+
+        ts_hs = [dy.concatenate([f, b]) for (f, b) in zip(ts_hs_f, ts_hs_b)]
+
+        ts_hs_tilde = []
+        h_tilde_tm1 = object
+        for t in range(seq_len):
+            if t == 0:
+                h_tilde_t = ts_hs[t]
+            else:
+                # t-th hidden state for the task targeted sentiment
+                ts_ht = ts_hs[t]
+                gt = dy.logistic(self.W_gate * ts_ht)
+                h_tilde_t = dy.cmult(gt, ts_ht) + dy.cmult(1 - gt, h_tilde_tm1)
+            ts_hs_tilde.append(h_tilde_t)
+            h_tilde_tm1 = h_tilde_t
+
+        if is_train:
+            # perform dropout during training
+            ote_hs = [dy.dropout(h, self.dropout_rate) for h in ote_hs]
+            stm_lm_hs = [dy.dropout(h, self.dropout_rate) for h in stm_lm_hs]
+            ts_hs_tilde = [dy.dropout(h, self.dropout_rate) for h in ts_hs_tilde]
+
+        # weight matrix for boundary-guided transition
+        self.W_trans_ote = dy.inputTensor(self.transition_scores.copy())
+
+        pred_ote_labels, pred_ts_labels = [], []
+        for i in range(seq_len):
+            # probability distribution over ote tag
+            p_y_x_ote = self.fc_ote(x=ote_hs[i])
+            p_y_x_ote = dy.softmax(p_y_x_ote)
+            # probability distribution over ts tag
+            p_y_x_ts = self.fc_ts(x=ts_hs_tilde[i])
+            p_y_x_ts = dy.softmax(p_y_x_ts)
+            # normalized the score
+            alpha = calculate_confidence(vec=p_y_x_ote, proportions=self.epsilon)
+            # transition score from ote tag to sentiment tag
+            ote2ts = self.W_trans_ote * p_y_x_ote
+            p_y_x_ts_tilde = alpha * ote2ts + (1 - alpha) * p_y_x_ts
+
+            pred_ote_labels.append(np.argmax(p_y_x_ote.npvalue()))
+            pred_ts_labels.append(np.argmax(p_y_x_ts_tilde.npvalue()))
+
+        return pred_ote_labels, pred_ts_labels
+
+    def serve(self, dataset, model_name=None, out_file_name="predictions.txt"):
+        model_path = './models/%s' % model_name
+        if not os.path.exists(model_path):
+            raise Exception("Invalid model path %s..." % model_path)
+        self.pc.populate(model_path)
+
+        n_sample = len(dataset)
+        pred_ote, pred_ts = [], []
+        predictions = []
+        for i in range(n_sample):
+            pred_ote_labels, pred_ts_labels = self.serve_forward(x=dataset[i], is_train=False)
+            ote_tags = label2tag(label_sequence=pred_ote_labels, tag_vocab=self.ote_tag_vocab)
+            pred_ote.append(ote_tags)
+            ts_tags = label2tag(label_sequence=pred_ts_labels, tag_vocab=self.ts_tag_vocab)
+            pred_ts.append(ts_tags)
+            predictions.append(
+                {"sentence": dataset[i]['sentence'], "ote_tags": ote_tags, "ts_tags": ts_tags}
+            )
+        # transform the output tag sequence to BIEOS tag sequence before evaluation
+        if self.tagging_schema == 'BIO':
+            pred_ote, pred_ts = bio2ot_batch(ote_tags=pred_ote, ts_tags=pred_ts)
+            pred_ote, pred_ts = ot2bieos_batch(ote_tags=pred_ote, ts_tags=pred_ts)
+        elif self.tagging_schema == 'OT':
+            pred_ote, pred_ts = ot2bieos_batch(ote_tags=pred_ote, ts_tags=pred_ts)
+        out_file_name = os.path.join("predictions", out_file_name)
+        with open(out_file_name, "w") as out_file:
+            out_file.write(json.dumps(predictions))
 
 class LSTM_CRF:
     # LSTM CRF model for sequence tagging
